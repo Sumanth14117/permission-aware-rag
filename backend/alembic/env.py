@@ -21,16 +21,13 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
-
 from app.config import get_settings
 from app.db.base import Base
 from app.db.migration_safety import (
-    MigrationSafetyError,
     resolve_migration_target,
     target_from_x_arguments,
 )
+from app.db.migration_runtime import run_migrations_with_engine
 from app.db.session import create_db_engine
 import app.models  # noqa: F401  — register all tables on Base.metadata
 
@@ -84,34 +81,12 @@ def run_migrations_online() -> None:
     """Apply migrations to the validated target. Not invoked at import time."""
     resolved = _resolve_from_config()
     engine = create_db_engine(resolved.sqlalchemy_url)
-    try:
-        try:
-            connection = engine.connect()
-        except DBAPIError:
-            raise MigrationSafetyError(
-                f"Could not connect to the migration target database '{resolved.database}'"
-            ) from None
-
-        with connection:
-            try:
-                actual_database = connection.execute(text("SELECT current_database()")).scalar_one()
-            except DBAPIError:
-                raise MigrationSafetyError(
-                    "Could not verify database identity for the migration target"
-                ) from None
-
-            if actual_database != resolved.database:
-                raise MigrationSafetyError(
-                    "Connected database identity does not match the validated migration target"
-                )
-            context.configure(
-                connection=connection,
-                target_metadata=target_metadata,
-            )
-            with context.begin_transaction():
-                context.run_migrations()
-    finally:
-        engine.dispose()
+    run_migrations_with_engine(
+        engine,
+        context,
+        target_metadata,
+        resolved.database,
+    )
 
 
 def run_alembic_env() -> None:
