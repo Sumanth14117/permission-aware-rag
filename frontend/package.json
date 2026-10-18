@@ -1,0 +1,6 @@
+{
+  "name": "permission-aware-rag-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Placeholder until M6. Vite, React, Vitest, and React Testing Library will be added with the UI."
+}
