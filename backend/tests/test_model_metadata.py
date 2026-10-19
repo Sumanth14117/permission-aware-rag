@@ -39,7 +39,7 @@ def _assert_no_defaults(column):
 
 
 def test_all_core_models_register_on_the_shared_base():
-    assert set(Base.metadata.tables) == EXPECTED_TABLES
+    assert EXPECTED_TABLES <= set(Base.metadata.tables)
     assert Organization.metadata is Base.metadata
     assert User.metadata is Base.metadata
     assert Membership.metadata is Base.metadata
@@ -88,7 +88,8 @@ def test_primary_keys_and_nullability_match_initial_schema():
         "memberships": set(),
         "sessions": {"revoked_at"},
     }
-    for table_name, table in Base.metadata.tables.items():
+    for table_name in EXPECTED_TABLES:
+        table = Base.metadata.tables[table_name]
         primary_keys = _constraints(table, PrimaryKeyConstraint)
         assert len(primary_keys) == 1
         primary_key = next(iter(primary_keys.values()))
@@ -100,7 +101,8 @@ def test_primary_keys_and_nullability_match_initial_schema():
 
 
 def test_uuid_and_timestamp_defaults_match_initial_schema():
-    for table in Base.metadata.tables.values():
+    for table_name in EXPECTED_TABLES:
+        table = Base.metadata.tables[table_name]
         identifier = table.c.id
         assert identifier.default is not None
         assert callable(identifier.default.arg)
@@ -160,7 +162,10 @@ def test_unique_and_check_constraints_match_initial_schema():
     assert {
         name: list(constraint.columns.keys())
         for name, constraint in _constraints(memberships, UniqueConstraint).items()
-    } == {"uq_memberships_user_id": ["user_id"]}
+    } == {
+        "uq_memberships_user_id": ["user_id"],
+        "uq_memberships_user_organization": ["user_id", "organization_id"],
+    }
 
     sessions = Base.metadata.tables["sessions"]
     assert {

@@ -71,7 +71,33 @@ class Settings(BaseSettings):
 
     # --- CSRF ---------------------------------------------------------------
     csrf_cookie_name: str = Field(default="par_csrf", pattern=_COOKIE_NAME_PATTERN)
+    # Generate CSRF_SECRET with a cryptographically secure random source and
+    # supply it through protected runtime configuration; never commit its value.
     csrf_secret: SecretStr
+    csrf_ttl_minutes: int = Field(default=30, ge=1, le=1440)
+
+    # --- Document storage ---------------------------------------------------
+    upload_root: Path = REPO_ROOT / "data" / "uploads"
+    max_upload_bytes: int = Field(default=10 * 1024 * 1024, ge=1, le=100 * 1024 * 1024)
+    chunk_size_chars: int = Field(default=1000, ge=1, le=20_000)
+    chunk_overlap_chars: int = Field(default=150, ge=0, le=19_999)
+
+    # --- Local embeddings and vector index ---------------------------------
+    embedding_model_name: str = Field(
+        default="sentence-transformers/all-MiniLM-L6-v2", min_length=1, max_length=256
+    )
+    embedding_batch_size: int = Field(default=32, ge=1, le=512)
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: SecretStr | None = None
+    qdrant_collection_name: str = Field(
+        default="document_chunks", pattern=r"^[A-Za-z0-9_-]{1,128}$"
+    )
+
+    # --- Answer generation -------------------------------------------------
+    llm_provider: str = Field(default="mock", pattern=r"^(mock|openai)$")
+    openai_api_key: SecretStr | None = None
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str = Field(default="gpt-4o-mini", min_length=1, max_length=256)
 
     # ------------------------------------------------------------------ validators
     @field_validator("test_database_url", mode="before")
@@ -90,6 +116,34 @@ class Settings(BaseSettings):
             # Deliberately do not include the value in the message.
             raise ValueError("database URL must start with 'postgresql+psycopg://'")
         return value
+
+    @field_validator("qdrant_api_key", mode="before")
+    @classmethod
+    def _empty_qdrant_key_is_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("qdrant_url")
+    @classmethod
+    def _validate_qdrant_url(cls, value: str) -> str:
+        try:
+            parts = urlsplit(value)
+            # Access port/hostname to reject malformed authorities.
+            _ = parts.hostname, parts.port
+        except ValueError:
+            raise ValueError("QDRANT_URL must be a valid HTTP(S) origin") from None
+        if (
+            parts.scheme not in ("http", "https")
+            or not parts.netloc
+            or parts.username
+            or parts.password
+            or parts.query
+            or parts.fragment
+            or parts.path not in ("", "/")
+        ):
+            raise ValueError("QDRANT_URL must be a valid HTTP(S) origin without credentials")
+        return value.rstrip("/")
 
     @field_validator("cors_origins")
     @classmethod
@@ -120,6 +174,8 @@ class Settings(BaseSettings):
     def _check_cross_field_rules(self) -> "Settings":
         if self.session_cookie_name == self.csrf_cookie_name:
             raise ValueError("session and CSRF cookie names must be different")
+        if self.chunk_overlap_chars >= self.chunk_size_chars:
+            raise ValueError("CHUNK_OVERLAP_CHARS must be smaller than CHUNK_SIZE_CHARS")
 
         secret = self.csrf_secret.get_secret_value()
         if len(secret) < _MIN_SECRET_LENGTH:
@@ -145,6 +201,10 @@ class Settings(BaseSettings):
     @property
     def session_ttl(self) -> timedelta:
         return timedelta(hours=self.session_ttl_hours)
+
+    @property
+    def csrf_ttl(self) -> timedelta:
+        return timedelta(minutes=self.csrf_ttl_minutes)
 
 
 @lru_cache

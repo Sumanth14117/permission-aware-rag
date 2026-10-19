@@ -31,6 +31,11 @@ class Membership(Base):
         # MVP rule: a user belongs to exactly one organization. This also
         # creates the index used to find a user's membership.
         UniqueConstraint("user_id"),
+        # Supports a composite permission foreign key that proves a reader is
+        # a member of the same organization as the document.
+        UniqueConstraint(
+            "user_id", "organization_id", name="uq_memberships_user_organization"
+        ),
         CheckConstraint("role IN ('owner', 'member')", name="role_valid"),
         # At most one owner per organization (PostgreSQL partial unique index).
         # Rows with role = 'member' are not part of this index at all.

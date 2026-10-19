@@ -1,0 +1,29 @@
+[
+  {
+    "id": "org-wide-read-recall",
+    "question": "What does the organization A travel policy cover?",
+    "user_id": "d25803b6-e0af-4f4c-aee7-a1c35d3feb48",
+    "organization_id": "9d71d83f-8887-43cc-a7ca-89443d887e1f",
+    "expected_document_ids": ["f1654aad-2084-46dd-a75d-c5d3d106ce0c"],
+    "forbidden_document_ids": ["984830e4-d7c6-4fd8-a60d-c10d8286a51a"],
+    "forbidden_terms": ["Organization B confidential pricing"]
+  },
+  {
+    "id": "cross-tenant-candidate-rejected",
+    "question": "How do I request reimbursement under the organization A policy?",
+    "user_id": "d25803b6-e0af-4f4c-aee7-a1c35d3feb48",
+    "organization_id": "9d71d83f-8887-43cc-a7ca-89443d887e1f",
+    "expected_document_ids": ["f1654aad-2084-46dd-a75d-c5d3d106ce0c"],
+    "forbidden_document_ids": ["984830e4-d7c6-4fd8-a60d-c10d8286a51a"],
+    "forbidden_terms": ["Organization B confidential pricing"]
+  },
+  {
+    "id": "empty-read-scope-refusal",
+    "question": "What is the confidential pricing secret?",
+    "user_id": "d25803b6-e0af-4f4c-aee7-a1c35d3feb48",
+    "organization_id": "9d71d83f-8887-43cc-a7ca-89443d887e1f",
+    "expected_document_ids": [],
+    "forbidden_document_ids": ["984830e4-d7c6-4fd8-a60d-c10d8286a51a"],
+    "forbidden_terms": ["Organization B confidential pricing"]
+  }
+]
