@@ -55,7 +55,12 @@ function submitSignup() {
 }
 
 describe("authentication interface", () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    vi.restoreAllMocks();
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -86,10 +91,50 @@ describe("authentication interface", () => {
       email: "member@example.test",
       password: "correct-horse",
     });
-    expect(await screen.findByRole("heading", { name: "You're signed in" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Ask your documents" })).toBeTruthy();
     expect(screen.getByText(/HTTP-only cookie/i)).toBeTruthy();
-    expect(await screen.findByText("No accessible documents yet.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
+  });
+
+  it("resets a restored browser scroll position on initial load", () => {
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    document.documentElement.scrollTop = 420;
+
+    render(<App />);
+
+    expect(scrollTo).toHaveBeenCalledWith({ top: 0, left: 0, behavior: "instant" });
+    expect(window.history.scrollRestoration).toBe("manual");
+  });
+
+  it("keeps signup navigation at the top when the authentication panel grows", () => {
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    render(<App />);
+    document.documentElement.scrollTop = 240;
+
+    openSignup();
+
+    expect(screen.getByRole("heading", { name: "Create account" })).toBeTruthy();
+    expect(scrollTo).toHaveBeenCalledWith({ top: 0, left: 0, behavior: "instant" });
+  });
+
+  it("resets scroll on explicit view navigation but not question interaction", async () => {
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    login.mockResolvedValueOnce(undefined);
+    askQuestion.mockResolvedValueOnce({ answer: "Answer", citations: [] });
+    render(<App />);
+    fillLoginForm();
+    submitLogin();
+    await screen.findByRole("heading", { name: "Ask your documents" });
+
+    document.documentElement.scrollTop = 360;
+    fireEvent.change(screen.getByLabelText("Question"), { target: { value: "Question" } });
+    fireEvent.submit(screen.getByLabelText("Question").closest("form"));
+    await waitFor(() => expect(askQuestion).toHaveBeenCalledWith("Question"));
+    expect(scrollTo).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Documents" })[0]);
+    expect(await screen.findByRole("heading", { name: "Documents" })).toBeTruthy();
+    expect(scrollTo).toHaveBeenCalledWith({ top: 0, left: 0, behavior: "instant" });
   });
 
   it("shows a generic invalid-credentials message", async () => {
@@ -182,7 +227,7 @@ describe("authentication interface", () => {
     expect(screen.getByRole("status").textContent).toBe("Signing in");
 
     resolveLogin();
-    expect(await screen.findByRole("heading", { name: "You're signed in" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Ask your documents" })).toBeTruthy();
   });
 
   it("submits a question and renders answer source citations", async () => {
@@ -200,7 +245,9 @@ describe("authentication interface", () => {
 
     expect(askQuestion).toHaveBeenCalledWith("What is known?");
     expect(await screen.findByText("A grounded answer.")).toBeTruthy();
-    expect(screen.getByText(/chunk 3/).textContent).toContain("doc-id");
+    const source = screen.getByText("Document source").closest("li");
+    expect(source.textContent).toContain("doc-id");
+    expect(source.textContent).toContain("Chunk 3");
   });
 
   it("clears the first answer before showing the second question's answer", async () => {
@@ -257,17 +304,37 @@ describe("authentication interface", () => {
     expect(screen.queryByText("database password")).toBeNull();
   });
 
-  it("uploads a selected file through the document API", async () => {
+  it("opens the document library from the visible navigation and refreshes after upload", async () => {
     login.mockResolvedValueOnce(undefined);
+    listDocuments
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        id: "new-doc",
+        original_filename: "notes.txt",
+        content_type: "text/plain",
+        size_bytes: 12,
+        visibility: "org",
+        status: "processing",
+      }]);
+    uploadDocument.mockResolvedValueOnce({ status: "processing" });
     render(<App />);
     fillLoginForm();
     submitLogin();
+    await screen.findByRole("heading", { name: "Ask your documents" });
+    const documentsTab = screen.getAllByRole("button", { name: "Documents" })[0];
+    expect(documentsTab.getAttribute("aria-current")).toBe(null);
+    fireEvent.click(documentsTab);
     await screen.findByRole("heading", { name: "Documents" });
+    expect(documentsTab.getAttribute("aria-current")).toBe("page");
+    expect(screen.getAllByRole("button", { name: "Upload document" }).length).toBeGreaterThan(0);
     const file = new File(["some content"], "notes.txt", { type: "text/plain" });
     fireEvent.change(screen.getByLabelText(/Upload a text or PDF/), { target: { files: [file] } });
     fireEvent.submit(screen.getByLabelText(/Upload a text or PDF/).closest("form"));
 
     await waitFor(() => expect(uploadDocument).toHaveBeenCalledWith(file, "org"));
+    expect(await screen.findByRole("row", { name: /notes\.txt/ })).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("Uploaded · notes.txt · processing");
+    expect(listDocuments).toHaveBeenCalledTimes(2);
   });
 
   it("deletes a document and refreshes the list", async () => {
@@ -279,10 +346,12 @@ describe("authentication interface", () => {
     render(<App />);
     fillLoginForm();
     submitLogin();
+    const documentNavButtons = await screen.findAllByRole("button", { name: "Documents" });
+    fireEvent.click(documentNavButtons[0]);
     fireEvent.click(await screen.findByRole("button", { name: "Delete notes.txt" }));
 
     await waitFor(() => expect(deleteDocument).toHaveBeenCalledWith("doc-1"));
-    expect(await screen.findByText("No accessible documents yet.")).toBeTruthy();
+    expect(await screen.findByText("Your library is ready")).toBeTruthy();
   });
 
   it("shows a safe message when a document is already gone", async () => {
@@ -294,6 +363,8 @@ describe("authentication interface", () => {
     render(<App />);
     fillLoginForm();
     submitLogin();
+    const documentNavButtons = await screen.findAllByRole("button", { name: "Documents" });
+    fireEvent.click(documentNavButtons[0]);
     fireEvent.click(await screen.findByRole("button", { name: "Delete notes.txt" }));
 
     expect((await screen.findByRole("alert")).textContent)
@@ -395,8 +466,7 @@ describe("authentication interface", () => {
       organizationName: "Example Org",
       password: "correct-horse-battery",
     }));
-    expect(await screen.findByRole("heading", { name: "You're signed in" })).toBeTruthy();
-    expect(await screen.findByText("No accessible documents yet.")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Ask your documents" })).toBeTruthy();
   });
 
   it("returns to sign in with a notice when automatic sign-in is unavailable", async () => {
@@ -410,7 +480,7 @@ describe("authentication interface", () => {
     expect(await screen.findByText("Account created. Sign in with your new credentials."))
       .toBeTruthy();
     expect(screen.getByLabelText("Email").value).toBe("owner@example.test");
-    expect(screen.queryByRole("heading", { name: "You're signed in" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Ask your documents" })).toBeNull();
   });
 
   it("shows a safe duplicate-email message without backend details", async () => {
@@ -461,11 +531,11 @@ describe("authentication interface", () => {
     submitSignup();
 
     expect(register).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("button", { name: "Creating account..." }).disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "Creating workspace..." }).disabled).toBe(true);
     expect(screen.getByRole("status").textContent).toBe("Creating account");
 
     resolveRegister({ signedIn: true });
-    expect(await screen.findByRole("heading", { name: "You're signed in" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Ask your documents" })).toBeTruthy();
   });
 });
 
