@@ -142,6 +142,8 @@ def ask_question(
     )
     return {
         "answer": result.answer,
+        "has_retrieved_sources": result.has_retrieved_sources,
+        "abstained": result.abstained,
         "citations": [
             {"document_id": citation.document_id, "chunk_index": citation.chunk_index}
             for citation in result.citations

@@ -250,6 +250,46 @@ describe("authentication interface", () => {
     expect(source.textContent).toContain("Chunk 3");
   });
 
+  it("explains when retrieval found no accessible source chunks", async () => {
+    login.mockResolvedValueOnce(undefined);
+    askQuestion.mockResolvedValueOnce({
+      answer: "I could not find an answer in the documents you can access.",
+      citations: [],
+      has_retrieved_sources: false,
+      abstained: false,
+    });
+    render(<App />);
+    fillLoginForm();
+    submitLogin();
+    await screen.findByRole("heading", { name: "Ask your documents" });
+    fireEvent.change(screen.getByLabelText("Question"), { target: { value: "Question?" } });
+    fireEvent.submit(screen.getByLabelText("Question").closest("form"));
+
+    expect(await screen.findByText(
+      "No accessible source chunks matched this question. Try asking about another document.",
+    )).toBeTruthy();
+  });
+
+  it("explains when sources were retrieved but could not answer", async () => {
+    login.mockResolvedValueOnce(undefined);
+    askQuestion.mockResolvedValueOnce({
+      answer: "I could not find an answer in the documents you can access.",
+      citations: [],
+      has_retrieved_sources: true,
+      abstained: true,
+    });
+    render(<App />);
+    fillLoginForm();
+    submitLogin();
+    await screen.findByRole("heading", { name: "Ask your documents" });
+    fireEvent.change(screen.getByLabelText("Question"), { target: { value: "Question?" } });
+    fireEvent.submit(screen.getByLabelText("Question").closest("form"));
+
+    expect(await screen.findByText(
+      "The available sources did not provide enough evidence to answer this question. Try asking about another detail.",
+    )).toBeTruthy();
+  });
+
   it("clears the first answer before showing the second question's answer", async () => {
     login.mockResolvedValueOnce(undefined);
     askQuestion.mockResolvedValueOnce({
@@ -282,9 +322,14 @@ describe("authentication interface", () => {
     resolveSecond({
       answer: "I could not find an answer in the documents you can access.",
       citations: [],
+      has_retrieved_sources: true,
+      abstained: true,
     });
     expect(await screen.findByText(
       "I could not find an answer in the documents you can access.",
+    )).toBeTruthy();
+    expect(await screen.findByText(
+      "The available sources did not provide enough evidence to answer this question. Try asking about another detail.",
     )).toBeTruthy();
     expect(screen.queryByText("The irrigation schedule answer.")).toBeNull();
   });

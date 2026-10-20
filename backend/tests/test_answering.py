@@ -223,6 +223,8 @@ def test_answer_does_not_call_llm_when_no_authorized_chunks_exist():
     assert result.citations == ()
     assert "could not find" in result.answer
     assert llm.calls == []
+    assert result.has_retrieved_sources is False
+    assert result.abstained is False
 
 
 def test_answer_skips_llm_when_search_returns_no_chunks():
@@ -234,6 +236,8 @@ def test_answer_skips_llm_when_search_returns_no_chunks():
     )
     assert result.citations == ()
     assert llm.calls == []
+    assert result.has_retrieved_sources is False
+    assert result.abstained is False
 
 
 IRRIGATION_SOURCE = (
@@ -247,6 +251,12 @@ SUPPORTED_QUESTION = (
 )
 UNSUPPORTED_QUESTION = (
     "What is the exact price of the irrigation equipment in rupees?"
+)
+GREENFARM_QUESTION = (
+    "What are the main activities, products, or services mentioned in the GreenFarm document?"
+)
+GREENFARM_SOURCE = (
+    "GreenFarm's main activities include growing crops and vegetables for local customers."
 )
 
 
@@ -293,6 +303,8 @@ def test_second_question_abstains_instead_of_repeating_the_first_answer():
     assert first.citations == (Citation(str(DOC_A), 0),)
     assert second.citations == ()
     assert second.answer == ABSTENTION_ANSWER
+    assert second.has_retrieved_sources is True
+    assert second.abstained is True
     assert second.answer != first.answer
     assert "soil moisture" not in second.answer.lower()
 
@@ -320,3 +332,76 @@ def test_mock_llm_quotes_the_best_matching_chunk_not_always_the_first():
     assert result.citations == (Citation(str(DOC_A), 1),)
     assert "soil moisture" in result.answer.lower()
     assert "pricing note" not in result.answer.lower()
+
+
+def test_mock_llm_answers_greenfarm_question_with_explicit_alternatives():
+    repository = FakeRepository()
+    repository.add_document(FakeDocument(DOC_A, ORG_A), GREENFARM_SOURCE)
+
+    result = answer_question(
+        context(),
+        GREENFARM_QUESTION,
+        repository=repository,
+        embedding_provider=FakeEmbedding(),
+        vector_search=FakeVectorSearch([candidate(DOC_A)]),
+        llm_provider=MockLLMProvider(),
+    )
+
+    assert result.citations == (Citation(str(DOC_A), 0),)
+    assert "growing crops" in result.answer.lower()
+
+
+def test_mock_llm_answers_relevant_question_with_different_wording():
+    repository = FakeRepository()
+    repository.add_document(FakeDocument(DOC_A, ORG_A), GREENFARM_SOURCE)
+
+    result = answer_question(
+        context(),
+        "Which crops does GreenFarm grow?",
+        repository=repository,
+        embedding_provider=FakeEmbedding(),
+        vector_search=FakeVectorSearch([candidate(DOC_A)]),
+        llm_provider=MockLLMProvider(),
+    )
+
+    assert result.citations == (Citation(str(DOC_A), 0),)
+    assert "growing crops" in result.answer.lower()
+
+
+def test_mock_llm_still_abstains_for_unrelated_question():
+    repository = FakeRepository()
+    repository.add_document(FakeDocument(DOC_A, ORG_A), GREENFARM_SOURCE)
+
+    result = answer_question(
+        context(),
+        "What is the price of the tractor?",
+        repository=repository,
+        embedding_provider=FakeEmbedding(),
+        vector_search=FakeVectorSearch([candidate(DOC_A)]),
+        llm_provider=MockLLMProvider(),
+    )
+
+    assert result.answer == ABSTENTION_ANSWER
+    assert result.citations == ()
+
+
+def test_greenfarm_citation_stays_with_retrieved_authorized_chunks():
+    repository = FakeRepository()
+    repository.add_document(FakeDocument(DOC_A, ORG_A), GREENFARM_SOURCE)
+    repository.add_document(
+        FakeDocument(DOC_B, ORG_A, visibility="restricted"),
+        "GreenFarm's main activities, products, or services are confidential."
+    )
+
+    result = answer_question(
+        context(),
+        GREENFARM_QUESTION,
+        repository=repository,
+        embedding_provider=FakeEmbedding(),
+        vector_search=FakeVectorSearch([candidate(DOC_A), candidate(DOC_B)]),
+        llm_provider=MockLLMProvider(),
+    )
+
+    assert result.citations == (Citation(str(DOC_A), 0),)
+    assert result.answer.endswith(GREENFARM_SOURCE)
+    assert "confidential" not in result.answer

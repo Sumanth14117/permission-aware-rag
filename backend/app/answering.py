@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import re
 import secrets
@@ -17,6 +17,9 @@ ABSTENTION_ANSWER = "I could not find an answer in the documents you can access.
 _MIN_QUESTION_COVERAGE = 0.6
 _MIN_TERM_LENGTH = 3
 _WORD_PATTERN = re.compile(r"[a-z0-9]+")
+_OR_LIST_PATTERN = re.compile(
+    r"\b([a-z0-9]+(?:,\s*[a-z0-9]+)*,\s*or\s+[a-z0-9]+)\b"
+)
 _STOP_WORDS = frozenset(
     "a about an and are as at be been but by can could did do does for from "
     "had has have how i if in into is it its may might of often on or our "
@@ -47,17 +50,31 @@ def _shares_stem(first: str, second: str) -> bool:
     return prefix >= 4
 
 
-def _question_coverage(question_terms: set[str], text: str) -> float:
-    """Fraction of question terms that appear, by simple stem, in the text."""
-    if not question_terms:
+def _question_coverage(question: str, text: str) -> float:
+    """Score grounded coverage, counting an explicit ``x, y, or z`` list once."""
+    question_terms = _content_terms(question)
+    alternative_groups = tuple(
+        frozenset(_content_terms(match.group(1)))
+        for match in _OR_LIST_PATTERN.finditer(question.lower())
+    )
+    alternative_groups = tuple(group for group in alternative_groups if len(group) > 1)
+    alternative_terms = set().union(*alternative_groups) if alternative_groups else set()
+    core_terms = question_terms - alternative_terms
+    denominator = len(core_terms) + len(alternative_groups)
+    if denominator == 0:
         return 0.0
     words = set(_WORD_PATTERN.findall(text.lower()))
-    matched = sum(
+    matched_core = sum(
         1
-        for term in question_terms
+        for term in core_terms
         if any(_shares_stem(term, word) for word in words)
     )
-    return matched / len(question_terms)
+    matched_alternatives = sum(
+        1
+        for group in alternative_groups
+        if any(_shares_stem(term, word) for term in group for word in words)
+    )
+    return (matched_core + matched_alternatives) / denominator
 
 
 class LLMError(RuntimeError):
@@ -92,13 +109,12 @@ class MockLLMProvider:
     ) -> str:
         if not chunks or len(source_markers) != len(chunks):
             raise LLMError("Answer generation requires matching sources")
-        question_terms = _content_terms(question)
-        if not question_terms:
+        if not _content_terms(question):
             return ABSTENTION_ANSWER
 
         best: tuple[float, str, RetrievedChunk] | None = None
         for marker, chunk in zip(source_markers, chunks, strict=True):
-            coverage = _question_coverage(question_terms, chunk.text)
+            coverage = _question_coverage(question, chunk.text)
             if best is None or coverage > best[0]:
                 best = (coverage, marker, chunk)
 
@@ -118,6 +134,8 @@ class Citation:
 class Answer:
     answer: str
     citations: tuple[Citation, ...]
+    has_retrieved_sources: bool = field(default=False, compare=False)
+    abstained: bool = field(default=False, compare=False)
 
 
 class OpenAICompatibleProvider:
@@ -260,4 +278,9 @@ def answer_question(
     if not answer.strip():
         raise LLMError("Answer generation returned no answer")
     citations = _validated_citations(raw_answer, sources, marker_pattern)
-    return Answer(answer, citations)
+    return Answer(
+        answer,
+        citations,
+        has_retrieved_sources=True,
+        abstained=raw_answer.strip() == ABSTENTION_ANSWER,
+    )

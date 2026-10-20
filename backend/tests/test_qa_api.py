@@ -55,7 +55,11 @@ def test_qa_endpoint_uses_session_context_and_returns_citations(monkeypatch):
     def fake_answer_question(authenticated_user, question, **kwargs):
         received["user"] = authenticated_user
         received["question"] = question
-        return Answer("Answer", (Citation("f1654aad-2084-46dd-a75d-c5d3d106ce0c", 2),))
+        return Answer(
+            "Answer",
+            (Citation("f1654aad-2084-46dd-a75d-c5d3d106ce0c", 2),),
+            has_retrieved_sources=True,
+        )
 
     monkeypatch.setattr(qa_module, "answer_question", fake_answer_question)
     application = create_app(settings=_settings())
@@ -70,6 +74,8 @@ def test_qa_endpoint_uses_session_context_and_returns_citations(monkeypatch):
     assert response.status_code == 200
     assert response.json() == {
         "answer": "Answer",
+        "has_retrieved_sources": True,
+        "abstained": False,
         "citations": [{"document_id": "f1654aad-2084-46dd-a75d-c5d3d106ce0c", "chunk_index": 2}],
     }
     assert received == {"user": context, "question": "What is in the document?"}
@@ -95,10 +101,16 @@ def test_qa_endpoint_returns_each_new_question_response(monkeypatch):
     def fake_answer_question(authenticated_user, question, **kwargs):
         received.append(question)
         if "price" in question:
-            return Answer(ABSTENTION_ANSWER, ())
+            return Answer(
+                ABSTENTION_ANSWER,
+                (),
+                has_retrieved_sources=True,
+                abstained=True,
+            )
         return Answer(
             "Irrigation schedule answer",
             (Citation("f1654aad-2084-46dd-a75d-c5d3d106ce0c", 0),),
+            has_retrieved_sources=True,
         )
 
     monkeypatch.setattr(qa_module, "answer_question", fake_answer_question)
@@ -122,11 +134,18 @@ def test_qa_endpoint_returns_each_new_question_response(monkeypatch):
     ]
     assert first.json() == {
         "answer": "Irrigation schedule answer",
+        "has_retrieved_sources": True,
+        "abstained": False,
         "citations": [
             {"document_id": "f1654aad-2084-46dd-a75d-c5d3d106ce0c", "chunk_index": 0}
         ],
     }
-    assert second.json() == {"answer": ABSTENTION_ANSWER, "citations": []}
+    assert second.json() == {
+        "answer": ABSTENTION_ANSWER,
+        "has_retrieved_sources": True,
+        "abstained": True,
+        "citations": [],
+    }
 
 
 def test_qa_request_rejects_client_supplied_authorization_fields():
