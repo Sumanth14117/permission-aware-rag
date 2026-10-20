@@ -1,12 +1,13 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App.jsx";
-import { login, logout } from "./authApi.js";
+import { login, logout, register } from "./authApi.js";
 import { askQuestion, deleteDocument, listDocuments, uploadDocument } from "./workspaceApi.js";
 
 vi.mock("./authApi.js", () => ({
   login: vi.fn(),
   logout: vi.fn(),
+  register: vi.fn(),
 }));
 
 vi.mock("./workspaceApi.js", () => ({
@@ -27,6 +28,30 @@ function fillLoginForm() {
 
 function submitLogin() {
   fireEvent.submit(screen.getByLabelText("Email").closest("form"));
+}
+
+function openSignup() {
+  fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+}
+
+function fillSignupForm({
+  email = "owner@example.test",
+  organization = "Example Org",
+  password = "correct-horse-battery",
+  confirmPassword = password,
+} = {}) {
+  fireEvent.change(screen.getByLabelText("Email"), { target: { value: email } });
+  fireEvent.change(screen.getByLabelText("Organization name"), {
+    target: { value: organization },
+  });
+  fireEvent.change(screen.getByLabelText("Password"), { target: { value: password } });
+  fireEvent.change(screen.getByLabelText("Confirm password"), {
+    target: { value: confirmPassword },
+  });
+}
+
+function submitSignup() {
+  fireEvent.submit(screen.getByLabelText("Organization name").closest("form"));
 }
 
 describe("authentication interface", () => {
@@ -178,6 +203,45 @@ describe("authentication interface", () => {
     expect(screen.getByText(/chunk 3/).textContent).toContain("doc-id");
   });
 
+  it("clears the first answer before showing the second question's answer", async () => {
+    login.mockResolvedValueOnce(undefined);
+    askQuestion.mockResolvedValueOnce({
+      answer: "The irrigation schedule answer.",
+      citations: [{ document_id: "doc-1", chunk_index: 0 }],
+    });
+    let resolveSecond;
+    askQuestion.mockReturnValueOnce(new Promise((resolve) => { resolveSecond = resolve; }));
+    render(<App />);
+    fillLoginForm();
+    submitLogin();
+    await screen.findByRole("heading", { name: "Ask your documents" });
+
+    fireEvent.change(screen.getByLabelText("Question"), {
+      target: { value: "When should irrigation activate?" },
+    });
+    fireEvent.submit(screen.getByLabelText("Question").closest("form"));
+    expect(await screen.findByText("The irrigation schedule answer.")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Question"), {
+      target: { value: "What is the exact price in rupees?" },
+    });
+    fireEvent.submit(screen.getByLabelText("Question").closest("form"));
+
+    await waitFor(() => expect(askQuestion).toHaveBeenLastCalledWith(
+      "What is the exact price in rupees?",
+    ));
+    await waitFor(() => expect(screen.queryByText("The irrigation schedule answer.")).toBeNull());
+
+    resolveSecond({
+      answer: "I could not find an answer in the documents you can access.",
+      citations: [],
+    });
+    expect(await screen.findByText(
+      "I could not find an answer in the documents you can access.",
+    )).toBeTruthy();
+    expect(screen.queryByText("The irrigation schedule answer.")).toBeNull();
+  });
+
   it("shows a safe question error without backend details", async () => {
     login.mockResolvedValueOnce(undefined);
     askQuestion.mockRejectedValueOnce({ code: "unavailable", message: "database password" });
@@ -235,6 +299,173 @@ describe("authentication interface", () => {
     expect((await screen.findByRole("alert")).textContent)
       .toBe("That document is no longer available.");
     expect(screen.queryByText("Document not found")).toBeNull();
+  });
+
+  it("navigates between sign in and account creation", () => {
+    render(<App />);
+
+    openSignup();
+
+    expect(screen.getByRole("heading", { name: "Create account" })).toBeTruthy();
+    expect(screen.getByLabelText("Email").required).toBe(true);
+    expect(screen.getByLabelText("Organization name").required).toBe(true);
+    expect(screen.getByLabelText("Password").required).toBe(true);
+    expect(screen.getByLabelText("Confirm password").required).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(screen.getByRole("heading", { name: "Sign in" })).toBeTruthy();
+    expect(screen.queryByLabelText("Organization name")).toBeNull();
+  });
+
+  it("clears password fields when switching between sign in and account creation", () => {
+    render(<App />);
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "owner@example.test" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "login-secret" },
+    });
+
+    openSignup();
+
+    expect(screen.getByLabelText("Password").value).toBe("");
+    expect(screen.getByLabelText("Confirm password").value).toBe("");
+
+    fireEvent.change(screen.getByLabelText("Email"), {
+      target: { value: "new-owner@example.test" },
+    });
+    fireEvent.change(screen.getByLabelText("Organization name"), {
+      target: { value: "Example Org" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "signup-secret" },
+    });
+    fireEvent.change(screen.getByLabelText("Confirm password"), {
+      target: { value: "signup-secret" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(screen.getByLabelText("Email").value).toBe("owner@example.test");
+    expect(screen.getByLabelText("Password").value).toBe("");
+
+    openSignup();
+
+    expect(screen.getByLabelText("Password").value).toBe("");
+    expect(screen.getByLabelText("Confirm password").value).toBe("");
+  });
+
+  it("validates signup fields before calling the API", async () => {
+    render(<App />);
+    openSignup();
+    submitSignup();
+
+    expect((await screen.findByRole("alert")).textContent)
+      .toBe("Complete every field to create your account.");
+    expect(register).not.toHaveBeenCalled();
+  });
+
+  it("rejects short and mismatched passwords before calling the API", async () => {
+    render(<App />);
+    openSignup();
+    fillSignupForm({ password: "short", confirmPassword: "short" });
+    submitSignup();
+
+    expect((await screen.findByRole("alert")).textContent)
+      .toBe("Use at least 8 characters for your password.");
+    expect(register).not.toHaveBeenCalled();
+
+    fillSignupForm({ confirmPassword: "different-password" });
+    submitSignup();
+
+    expect((await screen.findByRole("alert")).textContent).toBe("Passwords do not match.");
+    expect(register).not.toHaveBeenCalled();
+  });
+
+  it("creates an account and enters the workspace when signed in", async () => {
+    register.mockResolvedValueOnce({ signedIn: true });
+    render(<App />);
+    openSignup();
+    fillSignupForm({ email: " owner@example.test ", organization: " Example Org " });
+    submitSignup();
+
+    await waitFor(() => expect(register).toHaveBeenCalledWith({
+      email: "owner@example.test",
+      organizationName: "Example Org",
+      password: "correct-horse-battery",
+    }));
+    expect(await screen.findByRole("heading", { name: "You're signed in" })).toBeTruthy();
+    expect(await screen.findByText("No accessible documents yet.")).toBeTruthy();
+  });
+
+  it("returns to sign in with a notice when automatic sign-in is unavailable", async () => {
+    register.mockResolvedValueOnce({ signedIn: false });
+    render(<App />);
+    openSignup();
+    fillSignupForm({ email: "owner@example.test" });
+    submitSignup();
+
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();
+    expect(await screen.findByText("Account created. Sign in with your new credentials."))
+      .toBeTruthy();
+    expect(screen.getByLabelText("Email").value).toBe("owner@example.test");
+    expect(screen.queryByRole("heading", { name: "You're signed in" })).toBeNull();
+  });
+
+  it("shows a safe duplicate-email message without backend details", async () => {
+    register.mockRejectedValueOnce({ code: "duplicate_email", message: "internal database detail" });
+    render(<App />);
+    openSignup();
+    fillSignupForm();
+    submitSignup();
+
+    expect((await screen.findByRole("alert")).textContent)
+      .toBe("An account with this email already exists.");
+    expect(screen.queryByText("internal database detail")).toBeNull();
+    expect(register).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a safe CSRF error on signup and does not retry", async () => {
+    register.mockRejectedValueOnce({ code: "csrf_rejected", message: "parser detail" });
+    render(<App />);
+    openSignup();
+    fillSignupForm();
+    submitSignup();
+
+    expect((await screen.findByRole("alert")).textContent)
+      .toBe("The security check failed. Please submit the form again.");
+    expect(screen.queryByText("parser detail")).toBeNull();
+    expect(register).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a safe signup-unavailable message", async () => {
+    register.mockRejectedValueOnce({ code: "unavailable", message: "database password" });
+    render(<App />);
+    openSignup();
+    fillSignupForm();
+    submitSignup();
+
+    expect((await screen.findByRole("alert")).textContent)
+      .toBe("Sign up is temporarily unavailable. Please try again.");
+    expect(screen.queryByText("database password")).toBeNull();
+  });
+
+  it("shows a signup loading state and prevents duplicate submissions", async () => {
+    let resolveRegister;
+    register.mockReturnValueOnce(new Promise((resolve) => { resolveRegister = resolve; }));
+    render(<App />);
+    openSignup();
+    fillSignupForm();
+    submitSignup();
+    submitSignup();
+
+    expect(register).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Creating account..." }).disabled).toBe(true);
+    expect(screen.getByRole("status").textContent).toBe("Creating account");
+
+    resolveRegister({ signedIn: true });
+    expect(await screen.findByRole("heading", { name: "You're signed in" })).toBeTruthy();
   });
 });
 

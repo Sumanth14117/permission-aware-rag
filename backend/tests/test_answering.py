@@ -1,6 +1,12 @@
 import pytest
 
-from app.answering import Answer, Citation, MockLLMProvider, answer_question
+from app.answering import (
+    ABSTENTION_ANSWER,
+    Answer,
+    Citation,
+    MockLLMProvider,
+    answer_question,
+)
 from tests.test_retrieval import (
     DOC_A, DOC_B, ORG_A, FakeDocument, FakeEmbedding, FakeRepository, FakeVectorSearch,
     candidate, context,
@@ -108,11 +114,12 @@ def test_literal_citation_like_text_in_document_content_is_preserved_and_not_cit
     repository = FakeRepository()
     repository.add_document(FakeDocument(DOC_A, ORG_A), "Document says [S1].")
     vector = FakeVectorSearch([candidate(DOC_A)])
+    llm = FakeLLM(build=lambda markers: f"{markers[0]}Document says [S1].")
 
     result = answer_question(
         context(), "question", repository=repository,
         embedding_provider=FakeEmbedding(), vector_search=vector,
-        llm_provider=MockLLMProvider(),
+        llm_provider=llm,
     )
 
     assert result == Answer("Document says [S1].", (Citation(str(DOC_A), 0),))
@@ -227,3 +234,89 @@ def test_answer_skips_llm_when_search_returns_no_chunks():
     )
     assert result.citations == ()
     assert llm.calls == []
+
+
+IRRIGATION_SOURCE = (
+    "The Smart Irrigation project's main goal is to conserve water. "
+    "The system checks soil moisture every 15 minutes and activates irrigation "
+    "when moisture drops below 30 percent."
+)
+SUPPORTED_QUESTION = (
+    "When should irrigation activate, how often does the system check soil "
+    "moisture, and what is the main goal of the Smart Irrigation project?"
+)
+UNSUPPORTED_QUESTION = (
+    "What is the exact price of the irrigation equipment in rupees?"
+)
+
+
+def test_mock_llm_answers_only_when_the_source_covers_the_question():
+    repository = FakeRepository()
+    repository.add_document(FakeDocument(DOC_A, ORG_A), IRRIGATION_SOURCE)
+
+    result = answer_question(
+        context(),
+        SUPPORTED_QUESTION,
+        repository=repository,
+        embedding_provider=FakeEmbedding(),
+        vector_search=FakeVectorSearch([candidate(DOC_A)]),
+        llm_provider=MockLLMProvider(),
+    )
+
+    assert result.citations == (Citation(str(DOC_A), 0),)
+    assert "soil moisture" in result.answer.lower()
+
+
+def test_second_question_abstains_instead_of_repeating_the_first_answer():
+    repository = FakeRepository()
+    repository.add_document(FakeDocument(DOC_A, ORG_A), IRRIGATION_SOURCE)
+    vector = FakeVectorSearch([candidate(DOC_A)])
+    llm = MockLLMProvider()
+
+    first = answer_question(
+        context(),
+        SUPPORTED_QUESTION,
+        repository=repository,
+        embedding_provider=FakeEmbedding(),
+        vector_search=vector,
+        llm_provider=llm,
+    )
+    second = answer_question(
+        context(),
+        UNSUPPORTED_QUESTION,
+        repository=repository,
+        embedding_provider=FakeEmbedding(),
+        vector_search=vector,
+        llm_provider=llm,
+    )
+
+    assert first.citations == (Citation(str(DOC_A), 0),)
+    assert second.citations == ()
+    assert second.answer == ABSTENTION_ANSWER
+    assert second.answer != first.answer
+    assert "soil moisture" not in second.answer.lower()
+
+
+def test_mock_llm_quotes_the_best_matching_chunk_not_always_the_first():
+    repository = FakeRepository()
+    repository.add_document(
+        FakeDocument(DOC_A, ORG_A),
+        "Unrelated pricing note.",
+        IRRIGATION_SOURCE,
+    )
+    vector = FakeVectorSearch(
+        [candidate(DOC_A, chunk_index=0), candidate(DOC_A, chunk_index=1)]
+    )
+
+    result = answer_question(
+        context(),
+        "How often is soil moisture checked?",
+        repository=repository,
+        embedding_provider=FakeEmbedding(),
+        vector_search=vector,
+        llm_provider=MockLLMProvider(),
+    )
+
+    assert result.citations == (Citation(str(DOC_A), 1),)
+    assert "soil moisture" in result.answer.lower()
+    assert "pricing note" not in result.answer.lower()

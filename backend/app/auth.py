@@ -1,10 +1,11 @@
-"""HTTP routes for login and logout."""
+"""HTTP routes for registration, login, and logout."""
 
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.authentication import (
@@ -23,14 +24,32 @@ from app.audit import (
 from app.csrf import generate_csrf_token, is_valid_bootstrap_origin
 from app.db.session import get_db
 from app.models.audit_event import OUTCOME_FAILURE
+from app.registration import (
+    DuplicateEmailError,
+    InvalidEmailError,
+    RegistrationError,
+    normalize_email,
+    register_user,
+)
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
+
+MIN_PASSWORD_LENGTH = 8
+MAX_ORGANIZATION_NAME_LENGTH = 200
 
 
 class LoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: str
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str
+    organization_name: str
     password: str
 
 
@@ -55,6 +74,90 @@ def csrf_bootstrap(request: Request, response: Response) -> dict[str, str]:
         samesite="lax",
     )
     return {"csrf_token": token}
+
+
+@router.post("/register", status_code=status.HTTP_201_CREATED)
+def register(
+    payload: RegisterRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    """Create an account and try to sign the new user in immediately.
+
+    Returns ``signed_in`` so the client can fall back to the sign-in form when
+    the account was created but session creation failed. Passwords, exception
+    details, and database identifiers are never returned.
+    """
+    settings = request.app.state.settings
+
+    organization_name = payload.organization_name.strip()
+    if not organization_name or len(organization_name) > MAX_ORGANIZATION_NAME_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Enter a valid organization name",
+        )
+    if (
+        len(payload.password) < MIN_PASSWORD_LENGTH
+        or not payload.password.strip()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters",
+        )
+
+    try:
+        normalized_email = normalize_email(payload.email)
+    except (InvalidEmailError, TypeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Enter a valid email address",
+        ) from None
+
+    try:
+        register_user(
+            db,
+            email=normalized_email,
+            password=payload.password,
+            organization_name=organization_name,
+        )
+    except InvalidEmailError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Enter a valid email address",
+        ) from None
+    except DuplicateEmailError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with this email already exists",
+        ) from None
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Enter a valid password",
+        ) from None
+    except (RegistrationError, SQLAlchemyError):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Registration is temporarily unavailable",
+        ) from None
+
+    try:
+        login_result = authenticate_and_create_session(
+            db,
+            email=normalized_email,
+            password=payload.password,
+            session_ttl=settings.session_ttl,
+        )
+    except (AuthenticationError, AuthenticationServiceError):
+        # The account exists; let the client sign in explicitly instead of
+        # reporting a failure that would make a retry look like a duplicate.
+        return {"signed_in": False}
+
+    record_login_success(db, user_id=login_result.user.id)
+    _set_session_cookie(response, request, login_result.raw_token)
+    response.status_code = status.HTTP_201_CREATED
+    return {"signed_in": True}
 
 
 def _set_session_cookie(response: Response, request: Request, token: str) -> None:

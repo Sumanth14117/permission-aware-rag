@@ -1,6 +1,7 @@
 const CSRF_PATH = "/auth/csrf";
 const LOGIN_PATH = "/auth/login";
 const LOGOUT_PATH = "/auth/logout";
+const REGISTER_PATH = "/auth/register";
 const TOKEN_PATTERN = /^v1\.(\d{1,12})\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{43}$/;
 const EXPIRY_SKEW_SECONDS = 5;
 
@@ -8,6 +9,8 @@ let cachedCsrfToken = null;
 
 const ERROR_MESSAGES = {
   invalid_credentials: "Invalid email or password.",
+  duplicate_email: "An account with this email already exists.",
+  invalid_registration: "Check your details and try again.",
   csrf_rejected: "The security check failed. Refresh the page and try again.",
   unavailable: "Authentication is temporarily unavailable.",
   network: "Could not reach the authentication service. Try again.",
@@ -119,6 +122,33 @@ export async function login({ email, password }) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
   });
+}
+
+export async function register({ email, organizationName, password }) {
+  const response = await csrfFetch(REGISTER_PATH, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email,
+      organization_name: organizationName,
+      password,
+    }),
+  });
+
+  if (response.status === 201) {
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new AuthApiError("unexpected");
+    }
+    return { signedIn: payload?.signed_in === true };
+  }
+  if (response.status === 409) throw new AuthApiError("duplicate_email");
+  if (response.status === 400 || response.status === 422) {
+    throw new AuthApiError("invalid_registration");
+  }
+  throw errorForStatus(response.status);
 }
 
 export async function logout() {

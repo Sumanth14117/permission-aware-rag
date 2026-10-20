@@ -122,7 +122,9 @@ Vite listens at `http://localhost:5173` (fixed port) and proxies `/auth`, `/docu
 
 ### 8. Create a local account
 
-There is currently no registration page or HTTP registration route; the frontend provides a login form only. For local development, create the first owner account with the existing registration service. From `backend`, with the virtual environment active and migrations applied:
+Create an account from the frontend's sign-up page. The page calls `POST /auth/register`, which creates the user, organization, and owner membership and signs the new user in with the same HTTP-only session cookie used by login.
+
+For local development, you can also create the first owner account directly with the existing registration service. From `backend`, with the virtual environment active and migrations applied:
 
 ```powershell
 python -c "from app.db.session import get_session_factory; from app.registration import register_user; s = get_session_factory()(); register_user(s, email='owner@example.com', password='replace-with-a-strong-password', organization_name='Example Org'); s.close()"
@@ -180,7 +182,7 @@ npm test -- src/App.test.jsx src/workspaceApi.test.js
 
 ### 10. LLM configuration
 
-- `LLM_PROVIDER=mock` is the `.env.example` default. `MockLLMProvider` answers by quoting the first authorized chunk. It needs no API key and is the safe local and test mode.
+- `LLM_PROVIDER=mock` is the `.env.example` default. `MockLLMProvider` answers by quoting the retrieved chunk that best covers the question, and it abstains when the retrieved documents do not cover the question. It needs no API key and is the safe local and test mode.
 - For real generation, set these in `.env`:
 
   ```dotenv

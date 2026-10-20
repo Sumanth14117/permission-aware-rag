@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { login, logout } from "./authApi.js";
+import { login, logout, register } from "./authApi.js";
 import { askQuestion, deleteDocument, listDocuments, uploadDocument } from "./workspaceApi.js";
 
 function safeAuthMessage(error, action) {
@@ -11,6 +11,14 @@ function safeAuthMessage(error, action) {
   if (error?.code === "csrf_rejected") return "The security check failed. Please submit the form again.";
   if (["unavailable", "network"].includes(error?.code)) return "Sign in is temporarily unavailable. Please try again.";
   return "Could not sign in. Please try again.";
+}
+
+function safeSignupMessage(error) {
+  if (error?.code === "duplicate_email") return "An account with this email already exists.";
+  if (error?.code === "invalid_registration") return "Check your details and try again.";
+  if (error?.code === "csrf_rejected") return "The security check failed. Please submit the form again.";
+  if (["unavailable", "network"].includes(error?.code)) return "Sign up is temporarily unavailable. Please try again.";
+  return "Could not create your account. Please try again.";
 }
 
 function safeWorkspaceMessage(error) {
@@ -28,6 +36,13 @@ export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [authView, setAuthView] = useState("login");
+  const [signupEmail, setSignupEmail] = useState("");
+  const [organizationName, setOrganizationName] = useState("");
+  const [signupPassword, setSignupPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [signupError, setSignupError] = useState("");
+  const [signupNotice, setSignupNotice] = useState("");
   const [documents, setDocuments] = useState([]);
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [documentError, setDocumentError] = useState("");
@@ -71,9 +86,70 @@ export default function App() {
     try {
       await login({ email: email.trim(), password });
       setPassword("");
+      setSignupNotice("");
       setIsAuthenticated(true);
     } catch (error) {
       setErrorMessage(safeAuthMessage(error, "login"));
+    } finally {
+      inFlight.current = false;
+      setIsLoading(false);
+    }
+  }
+
+  function showSignup() {
+    setAuthView("signup");
+    setPassword("");
+    setErrorMessage("");
+    setSignupNotice("");
+    setSignupError("");
+  }
+
+  function showLogin() {
+    setAuthView("login");
+    setSignupPassword("");
+    setConfirmPassword("");
+    setSignupError("");
+    setSignupNotice("");
+  }
+
+  async function handleSignup(event) {
+    event.preventDefault();
+    if (inFlight.current) return;
+    if (!signupEmail.trim() || !organizationName.trim() || !signupPassword || !confirmPassword) {
+      setSignupError("Complete every field to create your account.");
+      return;
+    }
+    if (signupPassword.length < 8) {
+      setSignupError("Use at least 8 characters for your password.");
+      return;
+    }
+    if (signupPassword !== confirmPassword) {
+      setSignupError("Passwords do not match.");
+      return;
+    }
+    inFlight.current = true;
+    setIsLoading(true);
+    setSignupError("");
+    try {
+      const result = await register({
+        email: signupEmail.trim(),
+        organizationName: organizationName.trim(),
+        password: signupPassword,
+      });
+      setSignupPassword("");
+      setConfirmPassword("");
+      setEmail(signupEmail.trim());
+      setErrorMessage("");
+      if (result.signedIn) {
+        setSignupNotice("");
+        setIsAuthenticated(true);
+      } else {
+        setPassword("");
+        setAuthView("login");
+        setSignupNotice("Account created. Sign in with your new credentials.");
+      }
+    } catch (error) {
+      setSignupError(safeSignupMessage(error));
     } finally {
       inFlight.current = false;
       setIsLoading(false);
@@ -182,7 +258,7 @@ export default function App() {
                   {asking ? "Searching your accessible documents..." : "Ask question"}
                 </button>
               </form>
-              {asking && <p className="message" role="status">Searching your accessible documents...</p>}
+              {asking && <p className="message loading" role="status">Searching your accessible documents...</p>}
               {answer && (
                 <div className="answer-panel" aria-live="polite">
                   <h3>Answer</h3>
@@ -198,7 +274,7 @@ export default function App() {
                         ))}
                       </ul>
                     </div>
-                  ) : <p className="message">No accessible source chunks matched this question.</p>}
+                  ) : <p className="message empty-state">No accessible source chunks matched this question.</p>}
                 </div>
               )}
             </section>
@@ -230,9 +306,9 @@ export default function App() {
                 </button>
               </div>
               {deleteError && <p className="message error" role="alert">{deleteError}</p>}
-              {documentsLoading ? <p className="message" role="status">Loading documents...</p>
-                : documentError ? <p className="message">Document list is unavailable.</p>
-                  : documents.length === 0 ? <p className="message">No accessible documents yet.</p>
+              {documentsLoading ? <p className="message loading" role="status">Loading documents...</p>
+                : documentError ? <p className="message empty-state">Document list is unavailable.</p>
+                  : documents.length === 0 ? <p className="message empty-state">No accessible documents yet.</p>
                     : <ul className="document-list">{documents.map((document) => (
                       <li key={document.id}>
                         <span>{document.original_filename}</span>
@@ -247,24 +323,82 @@ export default function App() {
             </section>
           </section>
         ) : (
-          <form className="auth-panel" onSubmit={handleLogin} noValidate>
-            <h2>Sign in</h2>
-            <div className="field-group">
-              <label htmlFor="email">Email</label>
-              <input id="email" name="email" type="email" autoComplete="username" value={email}
-                onChange={(event) => setEmail(event.target.value)} required disabled={isLoading} />
-            </div>
-            <div className="field-group">
-              <label htmlFor="password">Password</label>
-              <input id="password" name="password" type="password" autoComplete="current-password" value={password}
-                onChange={(event) => setPassword(event.target.value)} required disabled={isLoading} />
-            </div>
-            {errorMessage && <p className="message error" role="alert">{errorMessage}</p>}
-            <button className="button primary" type="submit" disabled={isLoading}>
-              {isLoading ? "Signing in..." : "Sign in"}
-            </button>
-            {isLoading && <p className="visually-hidden" role="status">Signing in</p>}
-          </form>
+          <div className="auth-area">
+            {authView === "signup" ? (
+              <form className="auth-panel" onSubmit={handleSignup} noValidate aria-labelledby="signup-title">
+                <div className="auth-panel-heading">
+                  <p className="eyebrow small">New workspace</p>
+                  <h2 id="signup-title">Create account</h2>
+                  <p className="auth-copy">Start a secure workspace for your organization.</p>
+                </div>
+                <div className="field-group">
+                  <label htmlFor="signup-email">Email</label>
+                  <input id="signup-email" name="email" type="email" autoComplete="email" value={signupEmail}
+                    onChange={(event) => setSignupEmail(event.target.value)} required disabled={isLoading} />
+                </div>
+                <div className="field-group">
+                  <label htmlFor="organization-name">Organization name</label>
+                  <input id="organization-name" name="organization" type="text" autoComplete="organization"
+                    maxLength="200" value={organizationName}
+                    onChange={(event) => setOrganizationName(event.target.value)} required disabled={isLoading} />
+                </div>
+                <div className="field-group">
+                  <label htmlFor="signup-password">Password</label>
+                  <input id="signup-password" name="new-password" type="password" autoComplete="new-password"
+                    minLength="8" aria-describedby="password-hint" value={signupPassword}
+                    onChange={(event) => setSignupPassword(event.target.value)} required disabled={isLoading} />
+                  <small id="password-hint" className="field-hint">Use at least 8 characters.</small>
+                </div>
+                <div className="field-group">
+                  <label htmlFor="confirm-password">Confirm password</label>
+                  <input id="confirm-password" name="confirm-password" type="password" autoComplete="new-password"
+                    value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)}
+                    required disabled={isLoading} />
+                </div>
+                {signupError && <p className="message error" role="alert">{signupError}</p>}
+                <button className="button primary" type="submit" disabled={isLoading}>
+                  {isLoading ? "Creating account..." : "Create account"}
+                </button>
+                {isLoading && <p className="visually-hidden" role="status">Creating account</p>}
+                <p className="auth-switch">
+                  Already have an account?{" "}
+                  <button type="button" className="link-button" onClick={showLogin} disabled={isLoading}>
+                    Sign in
+                  </button>
+                </p>
+              </form>
+            ) : (
+              <form className="auth-panel" onSubmit={handleLogin} noValidate aria-labelledby="login-title">
+                <div className="auth-panel-heading">
+                  <p className="eyebrow small">Welcome back</p>
+                  <h2 id="login-title">Sign in</h2>
+                  <p className="auth-copy">Continue to your organization&apos;s workspace.</p>
+                </div>
+                {signupNotice && <p className="message success" role="status">{signupNotice}</p>}
+                <div className="field-group">
+                  <label htmlFor="email">Email</label>
+                  <input id="email" name="email" type="email" autoComplete="username" value={email}
+                    onChange={(event) => setEmail(event.target.value)} required disabled={isLoading} />
+                </div>
+                <div className="field-group">
+                  <label htmlFor="password">Password</label>
+                  <input id="password" name="password" type="password" autoComplete="current-password" value={password}
+                    onChange={(event) => setPassword(event.target.value)} required disabled={isLoading} />
+                </div>
+                {errorMessage && <p className="message error" role="alert">{errorMessage}</p>}
+                <button className="button primary" type="submit" disabled={isLoading}>
+                  {isLoading ? "Signing in..." : "Sign in"}
+                </button>
+                {isLoading && <p className="visually-hidden" role="status">Signing in</p>}
+                <p className="auth-switch">
+                  New to the workspace?{" "}
+                  <button type="button" className="link-button" onClick={showSignup} disabled={isLoading}>
+                    Create account
+                  </button>
+                </p>
+              </form>
+            )}
+          </div>
         )}
       </section>
     </main>

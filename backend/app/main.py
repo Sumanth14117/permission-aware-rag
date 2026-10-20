@@ -1,6 +1,8 @@
 """Minimal FastAPI application entry point."""
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.auth import router as auth_router
@@ -54,6 +56,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     content={"detail": "CSRF validation failed"},
                 )
         return await call_next(request)
+
+    @application.exception_handler(RequestValidationError)
+    async def protect_auth_validation_details(
+        request: Request, exc: RequestValidationError
+    ):
+        # Pydantic's default 422 response echoes the submitted body, which can
+        # contain a password. Auth payloads get a generic message instead.
+        if request.url.path in {"/auth/login", "/auth/register"}:
+            return JSONResponse(
+                status_code=422,
+                content={"detail": "Invalid request"},
+            )
+        return await request_validation_exception_handler(request, exc)
 
     @application.get("/health", tags=["health"])
     def health() -> dict[str, str]:
